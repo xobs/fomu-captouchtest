@@ -283,7 +283,7 @@ def main():
     os.environ["LITEX"] = "1" # Give our Makefile something to look for
     platform = Platform(board=args.board)
     soc = BaseSoC(platform, cpu_type=cpu_type, cpu_variant=cpu_variant,
-                            debug=True,
+                            debug="usb",
                             bios_file=args.bios,
                             pnr_seed=int(args.seed),
                             output_dir=output_dir)
@@ -295,7 +295,7 @@ def main():
         ]
     vns = builder.build()
     soc.do_exit(vns)
-    lxsocdoc.generate_docs(soc, "build/documentation/", project_name="Fomu Bootloader", author="Sean Cross")
+    lxsocdoc.generate_docs(soc, "build/documentation/", project_name="Fomu Captouch Test", author="Sean Cross")
     lxsocdoc.generate_svd(soc, "build/software", vendor="Foosn", name="Fomu")
 
     print("""Foboot build complete.  Output files:
