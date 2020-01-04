@@ -38,6 +38,8 @@ import argparse
 import os
 
 from rtl.fomucaptouch import CapTouchPads
+from rtl.sbled import SBLED
+from rtl.sbwarmboot import SBWarmBoot
 
 class Platform(LatticePlatform):
     def __init__(self, board=None, toolchain="icestorm"):
@@ -179,6 +181,8 @@ class BaseSoC(SoCCore, AutoDoc):
 
         if usb_debug:
             self.add_wb_master(self.usb.debug_bridge.wishbone)
+
+        self.submodules.reboot = SBWarmBoot(self)
 
         # Add GPIO pads for the touch buttons
         platform.add_extension(CapTouchPads.touch_device)
