@@ -117,7 +117,7 @@ class CapTouchPads(Module, AutoCSR):
                 ).Else(
                     If(~touch2.i,           # If the output value has fallen
                         touch2.oe.eq(1),    # Increment the count and start over
-                        cap2_count.eq(cap1_count + 1),
+                        cap2_count.eq(cap2_count + 1),
                     )
                 )
             ).Else(
