@@ -23,6 +23,7 @@ int main(int argc, char **argv) {
     }
 
     touch_capen_write(0xf);
+    touch_cper_write(524288);
 
     while (1) {
         uint8_t c1 = touch_c1_read();
