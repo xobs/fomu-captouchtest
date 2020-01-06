@@ -66,13 +66,8 @@ class CapTouchPads(Module, AutoCSR):
 
         cper = 524288
         cap_count_len = 20
-        if debugging:
-            cap_count_len = 32
-            self.cper   = CSRStorage(cap_count_len, description="""The number of clock cycles for one sample period
-
-            The hardware will count how many times the touchpad discharges within this sample
-            period and reflect that value in the corresponding `count` register.""", reset=524288)
-            cper = self.cper.storage
+        cpress = 0x0a
+        crel = 0x03
 
         self.cstat  = CSRStatus(4, description="Current status of the captouch buttons", fields=[
             CSRField("s1", description="State of pad 1"),
@@ -81,14 +76,19 @@ class CapTouchPads(Module, AutoCSR):
             CSRField("s4", description="State of pad 4"),
         ])
 
-        cpress = 0x0a
-        crel = 0x03
         if debugging:
+            cap_count_len = 32
+            self.cper   = CSRStorage(cap_count_len, description="""The number of clock cycles for one sample period
+
+            The hardware will count how many times the touchpad discharges within this sample
+            period and reflect that value in the corresponding `count` register.""", reset=524288)
+            cper = self.cper.storage
+
             self.cpress = CSRStorage(cap_signal_size, reset=0x0a, description="Count threshold for triggering a ``press`` event")
             cpress = self.cpress.storage
             self.crel   = CSRStorage(cap_signal_size, reset=0x03, description="Count threshold for triggering a ``release`` event")
             crel = self.crel.storage
-        if debugging:
+
             self.c1     = CSRStatus(cap_signal_size, description="Count of events for pad 1")
             self.c2     = CSRStatus(cap_signal_size, description="Count of events for pad 2")
             self.c3     = CSRStatus(cap_signal_size, description="Count of events for pad 3")
