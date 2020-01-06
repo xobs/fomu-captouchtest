@@ -1,4 +1,4 @@
-from migen import Module, TSTriple, Cat, Signal, If
+from migen import Module, TSTriple, Cat, Signal, If, wrap
 from litex.soc.interconnect.csr import AutoCSR, CSRStatus, CSRStorage, CSRField
 from litex.soc.integration.doc import ModuleDoc
 from litex.build.generic_platform import Pins, Subsignal
@@ -13,7 +13,7 @@ class CapTouchPads(Module, AutoCSR):
             Subsignal("t4", Pins("touch_pins:3")),
         )
     ]
-    def __init__(self, pads):
+    def __init__(self, pads, debugging=False):
         self.intro = ModuleDoc("""Fomu Touchpads
 
         Fomu has four single-ended exposed pads on its side.  These pads are designed
@@ -37,6 +37,7 @@ class CapTouchPads(Module, AutoCSR):
         self.specials += touch2.get_tristate(pads.t2)
         self.specials += touch3.get_tristate(pads.t3)
         self.specials += touch4.get_tristate(pads.t4)
+        ios = [touch1, touch2, touch3, touch4]
 
         self.o      = CSRStorage(4, description="Output values for pads 1-4", fields=[
             CSRField("o1", description="Output value for pad 1"),
@@ -62,13 +63,17 @@ class CapTouchPads(Module, AutoCSR):
             CSRField("t3", description="Enable captouch for pad 3"),
             CSRField("t4", description="Enable captouch for pad 4"),
         ])
-        self.cper   = CSRStorage(32, description="""The number of clock cycles for one sample period
 
-        The hardware will count how many times the touchpad discharges within this sample
-        period and reflect that value in the corresponding `count` register.""", reset=524288)
+        cper = 524288
+        cap_count_len = 20
+        if debugging:
+            cap_count_len = 32
+            self.cper   = CSRStorage(cap_count_len, description="""The number of clock cycles for one sample period
 
-        self.cpress = CSRStorage(cap_signal_size, reset=0x0a, description="Count threshold for triggering a ``press`` event")
-        self.crel   = CSRStorage(cap_signal_size, reset=0x03, description="Count threshold for triggering a ``release`` event")
+            The hardware will count how many times the touchpad discharges within this sample
+            period and reflect that value in the corresponding `count` register.""", reset=524288)
+            cper = self.cper.storage
+
         self.cstat  = CSRStatus(4, description="Current status of the captouch buttons", fields=[
             CSRField("s1", description="State of pad 1"),
             CSRField("s2", description="State of pad 2"),
@@ -76,12 +81,20 @@ class CapTouchPads(Module, AutoCSR):
             CSRField("s4", description="State of pad 4"),
         ])
 
-        self.c1     = CSRStatus(cap_signal_size, description="Count of events for pad 1")
-        self.c2     = CSRStatus(cap_signal_size, description="Count of events for pad 2")
-        self.c3     = CSRStatus(cap_signal_size, description="Count of events for pad 3")
-        self.c4     = CSRStatus(cap_signal_size, description="Count of events for pad 4")
+        cpress = 0x0a
+        crel = 0x03
+        if debugging:
+            self.cpress = CSRStorage(cap_signal_size, reset=0x0a, description="Count threshold for triggering a ``press`` event")
+            cpress = self.cpress.storage
+            self.crel   = CSRStorage(cap_signal_size, reset=0x03, description="Count threshold for triggering a ``release`` event")
+            crel = self.crel.storage
+        if debugging:
+            self.c1     = CSRStatus(cap_signal_size, description="Count of events for pad 1")
+            self.c2     = CSRStatus(cap_signal_size, description="Count of events for pad 2")
+            self.c3     = CSRStatus(cap_signal_size, description="Count of events for pad 3")
+            self.c4     = CSRStatus(cap_signal_size, description="Count of events for pad 4")
 
-        cap_count = Signal(self.cper.size)
+        cap_count = Signal(cap_count_len)
         cap1_count = Signal(cap_signal_size)
         cap2_count = Signal(cap_signal_size)
         cap3_count = Signal(cap_signal_size)
@@ -92,149 +105,47 @@ class CapTouchPads(Module, AutoCSR):
             Indicates a touch event such as a "press" or "release" has occurred.""")
         self.ev.finalize()
 
+        ar = []
+        syn = []
+        cmb = []
+        for num, pad in enumerate(ios, start=1):
+            print("touch{}".format(num))
+            if debugging:
+                exec("ar.append(self.c{}.status.eq(cap{}_count))".format(num, num))
+            exec("ar.append(cap{}_count.eq(0))".format(num))
+
+            # Implement a schmitt trigger in Verilog
+            # 1: Value is 1 and count > crel OR value is 0 and count > cpress
+            # 0: Value is 1 and count < crel OR value is 0 and count < cpress
+            exec("""ar.append(self.cstat.fields.s{}.eq(
+                    (self.cstat.fields.s{} & wrap(cap{}_count > crel)) |
+                    (~self.cstat.fields.s{} & wrap(cap{}_count > cpress))))""".format(num, num, num, num, num))
+
+            exec("cmb.append(pad.o.eq(self.o.fields.o{} | self.capen.fields.t{}))".format(num, num))
+            exec("cmb.append(self.i.fields.i{}.eq(pad.i))".format(num))
+            exec("syn.append(cap{}_count.eq(cap{}_count + (self.capen.fields.t{} & ~pad.i)))".format(num, num, num))
+            exec("syn.append(pad.oe.eq(self.oe.fields.oe{} | (self.capen.fields.t{} & ~pad.i)))".format(num, num))
+
+        # This is used to trigger an interrupt when this value changes
+        last_stat = Signal(4)
+
         self.sync += [
             self.ev.touch.trigger.eq(0),
+
+            last_stat.eq(self.cstat.status),
+            self.ev.touch.trigger.eq(self.cstat.status != last_stat),
+
+            *syn,
 
             # Perform a captouch tick
             If(cap_count > 0,
                 cap_count.eq(cap_count - 1),
             ).Else(
-                cap_count.eq(self.cper.storage),
-
-                self.c1.status.eq(cap1_count),
-                cap1_count.eq(0),
-
-                self.c2.status.eq(cap2_count),
-                cap2_count.eq(0),
-
-                self.c3.status.eq(cap3_count),
-                cap3_count.eq(0),
-
-                self.c4.status.eq(cap4_count),
-                cap4_count.eq(0),
-
-                If(self.capen.fields.t1,
-                    If(cap1_count > self.cpress.storage,
-                        If(~self.cstat.fields.s1,
-                            self.cstat.fields.s1.eq(1),
-                            self.ev.touch.trigger.eq(1),
-                        )
-                    ),
-                    If(cap1_count < self.crel.storage,
-                        If(self.cstat.fields.s1,
-                            self.cstat.fields.s1.eq(0),
-                            self.ev.touch.trigger.eq(1),
-                        )
-                    ),
-                ),
-
-                If(self.capen.fields.t2,
-                    If(cap2_count > self.cpress.storage,
-                        If(~self.cstat.fields.s2,
-                            self.cstat.fields.s2.eq(1),
-                            self.ev.touch.trigger.eq(1),
-                        )
-                    ),
-                    If(cap2_count < self.crel.storage,
-                        If(self.cstat.fields.s2,
-                            self.cstat.fields.s2.eq(0),
-                            self.ev.touch.trigger.eq(1),
-                        )
-                    ),
-                ),
-
-                If(self.capen.fields.t3,
-                    If(cap3_count > self.cpress.storage,
-                        If(~self.cstat.fields.s3,
-                            self.cstat.fields.s3.eq(1),
-                            self.ev.touch.trigger.eq(1),
-                        )
-                    ),
-                    If(cap3_count < self.crel.storage,
-                        If(self.cstat.fields.s3,
-                            self.cstat.fields.s3.eq(0),
-                            self.ev.touch.trigger.eq(1),
-                        )
-                    ),
-                ),
-
-                If(self.capen.fields.t4,
-                    If(cap4_count > self.cpress.storage,
-                        If(~self.cstat.fields.s4,
-                            self.cstat.fields.s4.eq(1),
-                            self.ev.touch.trigger.eq(1),
-                        )
-                    ),
-                    If(cap4_count < self.crel.storage,
-                        If(self.cstat.fields.s4,
-                            self.cstat.fields.s4.eq(0),
-                            self.ev.touch.trigger.eq(1),
-                        )
-                    ),
-                ),
+                cap_count.eq(cper),
+                *ar,
             ),
+        ]
 
-            If(self.capen.fields.t1,
-                touch1.o.eq(1),             # Keep the output value high
-                If(touch1.oe,               # If OE is enabled, then we just charged up the output
-                    touch1.oe.eq(0),        # Turn OE off and let it start to fall
-                ).Else(
-                    If(~touch1.i,           # If the output value has fallen
-                        touch1.oe.eq(1),    # Increment the count and start over
-                        cap1_count.eq(cap1_count + 1),
-                    )
-                ),
-            ).Else(
-                touch1.o.eq(self.o.fields.o1),
-                touch1.oe.eq(self.oe.fields.oe1),
-                self.i.fields.i1.eq(touch1.i)
-            ),
-
-            If(self.capen.fields.t2,
-                touch2.o.eq(1),             # Keep the output value high
-                If(touch2.oe,               # If OE is enabled, then we just charged up the output
-                    touch2.oe.eq(0),        # Turn OE off and let it start to fall
-                ).Else(
-                    If(~touch2.i,           # If the output value has fallen
-                        touch2.oe.eq(1),    # Increment the count and start over
-                        cap2_count.eq(cap2_count + 1),
-                    )
-                )
-            ).Else(
-                touch2.o.eq(self.o.fields.o2),
-                touch2.oe.eq(self.oe.fields.oe2),
-                self.i.fields.i2.eq(touch2.i)
-            ),
-
-            If(self.capen.fields.t3,
-                touch3.o.eq(1),             # Keep the output value high
-                If(touch3.oe,               # If OE is enabled, then we just charged up the output
-                    touch3.oe.eq(0),        # Turn OE off and let it start to fall
-                ).Else(
-                    If(~touch3.i,           # If the output value has fallen
-                        touch3.oe.eq(1),    # Increment the count and start over
-                        cap3_count.eq(cap3_count + 1),
-                    )
-                )
-            ).Else(
-                touch3.o.eq(self.o.fields.o3),
-                touch3.oe.eq(self.oe.fields.oe3),
-                self.i.fields.i3.eq(touch3.i)
-            ),
-
-            If(self.capen.fields.t4,
-                touch4.o.eq(1),             # Keep the output value high
-                If(touch4.oe,               # If OE is enabled, then we just charged up the output
-                    touch4.oe.eq(0),        # Turn OE off and let it start to fall
-                ).Else(
-                    If(~touch4.i,           # If the output value has fallen
-                        touch4.oe.eq(1),    # Increment the count and start over
-                        cap4_count.eq(cap4_count + 1),
-                    )
-                )
-            ).Else(
-                touch4.o.eq(self.o.fields.o4),
-                touch4.oe.eq(self.oe.fields.oe4),
-                self.i.fields.i4.eq(touch4.i)
-            ),
+        self.comb += [
+            *cmb,
         ]
